@@ -1,27 +1,39 @@
 #include <Blinkenlight.h>
 #include <Servo.h>
 #include "Button2.h"
+#include <EEPROM.h>
 
-Blinkenlight _statusLed(PC13, true);
+const short _statusLedPin = 2;
+const short _servoPin = 5;
+const short _buttonPin = 4;
+
+const long _second = 1000;
+const long _minute = 60 * _second;
+const long _hour = 60 * _minute;
+const long _day = 24 * _hour;
+const long _updatePeriod = _day / 2; // adjust period here
+const short _angles[] = {11, 11, 12, 12, 13, 13, 14, 15, 13, 13, 13, 12, 12, 12, 12}; // fine-tuning to warped and poorly modelled plastics 
+const short _stagesCount = 15;
+
+struct State 
+{
+  int currentStage;
+};
+
+State _state;
+Blinkenlight _statusLed(_statusLedPin, true);
 Button2 _button;
 Servo _servo;
-
-const short _stagesCount = 16;
-unsigned short _currentStage = 7;
-
-const int _minAngle = 0;
-const int _maxAngle = 170;
-const int _anglePerStage = 13;
-const long _millisInDay = 86400000;
-const long _lastStageIncrementTime = 0;
-short _angles[] = {12, 12, 12, 12, 13, 13, 14, 14, 15, 12, 12, 12, 12, 12, 12, 12}; // fine-tuning to warped and poorly modelled plastics 
+long _lastStageIncrementTime = 0;
 
 void setup()
 {
-    _servo.attach(PB12);
-    _button.begin(PA0);
-    _button.setTapHandler(handleTap);
-    _statusLed.setting.ending_ms = 5000;
+    _servo.attach(5, 544, 2400);
+    _button.begin(4);
+    _button.setTapHandler(HandleTap);
+    _statusLed.setting.ending_ms = _minute;
+    EEPROM.begin(4); // esp826 quirk
+    LoadState();
     UpdateLedStage();
     UpdateServoStage();
 }
@@ -30,29 +42,72 @@ void loop()
 {
     _button.loop();
     _statusLed.update();
+    UpdateStageByTimer();
 }
 
-void handleTap(Button2& button) 
+void HandleTap(Button2& button) 
 {
-    if (button.wasPressedFor() < 50)
+    int pressDuration = button.wasPressedFor();
+    if (pressDuration < 50)
         return; 
-    _currentStage++;
-    if (_currentStage >= _stagesCount)
-        _currentStage = 0;
+    if (pressDuration > 1000)
+        ResetStage();
+    else
+        IncrementStage();
+    _lastStageIncrementTime = millis(); // reset timer on button press
+}
+
+void UpdateStageByTimer()
+{
+    long currentMillis = millis();
+    if (currentMillis - _lastStageIncrementTime < _updatePeriod)
+        return;
+    _lastStageIncrementTime = currentMillis;
+    IncrementStage();
+}
+
+void IncrementStage()
+{
+    _state.currentStage++;
+    if (_state.currentStage >= _stagesCount)
+        _state.currentStage = 0;
+    UpdateState();
+    SaveState();
+}
+
+void ResetStage()
+{
+    _state.currentStage = 0;
+    SaveState();
+    UpdateState();
+}
+
+void UpdateState()
+{
     UpdateLedStage();
     UpdateServoStage();
 }
 
 void UpdateLedStage()
 {
-    _statusLed.pattern(_currentStage + 1);
+    _statusLed.pattern(_state.currentStage + 1);
 }
 
 void UpdateServoStage()
 {
-    int totalAngle = _minAngle;
-    for (int i = 0; i < _currentStage; i++)
+    int totalAngle = 0;
+    for (int i = 0; i < _state.currentStage; i++)
         totalAngle += _angles[i];
     _servo.write(totalAngle);
 }
 
+void LoadState() 
+{
+    EEPROM.get(0, _state);
+}
+
+void SaveState() 
+{
+    EEPROM.put(0, _state);
+    EEPROM.commit(); // esp826 quirk
+}
